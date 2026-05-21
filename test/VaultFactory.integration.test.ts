@@ -5,12 +5,6 @@ import { expect } from "chai";
 
 const TASK_COFHE_MOCKS_DEPLOY = "task:cofhe-mocks:deploy";
 
-// NOTE: VaultFactory.createVault() calls vault.initialize() with msg.sender = factory,
-// but vault.initialize() requires msg.sender == vault.owner (the creator).
-// This is a design inconsistency in the contracts. The integration tests below
-// test the factory components individually and show a manual end-to-end flow
-// where the owner calls initialize after the factory deploys sub-components.
-
 describe("VaultFactory Integration", function () {
   async function deployFactoryFixture() {
     await hre.run(TASK_COFHE_MOCKS_DEPLOY);
@@ -41,11 +35,16 @@ describe("VaultFactory Integration", function () {
     const AMFFactory = await hre.ethers.getContractFactory("AllocationMechanismFactory");
     const allocationMechanismFactory = await AMFFactory.connect(deployer).deploy();
 
-    // Deploy VaultFactory
+    // Deploy shared PrivateRebalancer
+    const RebalancerFactory = await hre.ethers.getContractFactory("PrivateRebalancer");
+    const rebalancer = await RebalancerFactory.connect(deployer).deploy(deployer.address);
+
+    // Deploy VaultFactory (with rebalancer address)
     const VaultFactoryFactory = await hre.ethers.getContractFactory("VaultFactory");
     const vaultFactory = await VaultFactoryFactory.connect(deployer).deploy(
       await vaultRegistry.getAddress(),
-      await allocationMechanismFactory.getAddress()
+      await allocationMechanismFactory.getAddress(),
+      await rebalancer.getAddress()
     );
 
     // Set factory in registry
@@ -61,6 +60,7 @@ describe("VaultFactory Integration", function () {
       vaultRegistry,
       allocationMechanismFactory,
       vaultFactory,
+      rebalancer,
       asset,
       deployer,
       keeper,
@@ -102,6 +102,129 @@ describe("VaultFactory Integration", function () {
 
       expect(await vaultRegistry.factory()).to.equal(await vaultFactory.getAddress());
       expect(await vaultRegistry.factorySet()).to.be.true;
+    });
+  });
+
+  describe("Full vault creation via factory (initialize works now)", function () {
+    it("should create a full vault via factory with all components linked", async function () {
+      const {
+        vaultFactory,
+        vaultRegistry,
+        rebalancer,
+        asset,
+        deployer,
+        keeper,
+        emergencyAdmin,
+        recipient,
+        user,
+        client,
+        encFee,
+        encDrift,
+        encMinTime,
+      } = await loadFixture(deployFactoryFixture);
+
+      const tx = await vaultFactory.connect(deployer).createVault({
+        asset: await asset.getAddress(),
+        name: "Factory Vault",
+        symbol: "FV",
+        donationAddress: recipient.address,
+        allocationMechanismType: 0, // FIXED
+        initialRecipients: [recipient.address],
+        initialWeights: [10000n],
+        votingCandidates: [],
+        votingEpochDuration: 0,
+        vaultCreatorFeeEncrypted: encFee[0],
+        driftThresholdEncrypted: encDrift[0],
+        minTimeBetweenRebalancesEncrypted: encMinTime[0],
+        keeper: keeper.address,
+        emergencyAdmin: emergencyAdmin.address,
+        maxStrategies: 10,
+      });
+
+      const receipt = await tx.wait();
+      // Parse VaultCreated event
+      const event = receipt?.logs.find(
+        (l: any) => l.fragment?.name === "VaultCreated"
+      );
+      expect(event).to.not.be.undefined;
+
+      const vaultAddr = event?.args?.vault;
+      expect(vaultAddr).to.not.be.undefined;
+
+      const vault = await hre.ethers.getContractAt("PrivateComposableVault", vaultAddr);
+
+      // Verify vault is initialized
+      expect(await vault.owner()).to.equal(deployer.address);
+      expect(await vault.keeper()).to.equal(keeper.address);
+      expect(await vault.emergencyAdmin()).to.equal(emergencyAdmin.address);
+      expect(await vault.registry()).to.not.equal(hre.ethers.ZeroAddress);
+      expect(await vault.yieldRouter()).to.not.equal(hre.ethers.ZeroAddress);
+      expect(await vault.rebalancer()).to.not.equal(hre.ethers.ZeroAddress);
+
+      // Verify rebalancer is shared across vaults
+      const rebalancerAddr = await vault.rebalancer();
+      expect(rebalancerAddr).to.equal(await rebalancer.getAddress());
+      const rebalancerContract = await hre.ethers.getContractAt("PrivateRebalancer", rebalancerAddr);
+      expect(await rebalancerContract.isConfigured(await vault.getAddress())).to.be.true;
+
+      // Deposit and verify
+      const DEPOSIT = 1000n * 10n ** 6n;
+      await asset.connect(user).approve(await vault.getAddress(), DEPOSIT);
+      await vault.connect(user).deposit(DEPOSIT, user.address);
+
+      expect(await vault.totalPrincipal()).to.equal(DEPOSIT);
+      expect(await vault.balanceOf(user.address)).to.equal(DEPOSIT);
+
+      // Vault registered in registry
+      expect(await vaultRegistry.vaultCount()).to.equal(1n);
+    });
+
+    it("vault.initialize reverts when called again after setup", async function () {
+      const {
+        vaultFactory,
+        asset,
+        deployer,
+        keeper,
+        emergencyAdmin,
+        recipient,
+        client,
+        encFee,
+        encDrift,
+        encMinTime,
+      } = await loadFixture(deployFactoryFixture);
+
+      const tx = await vaultFactory.connect(deployer).createVault({
+        asset: await asset.getAddress(),
+        name: "Test Vault",
+        symbol: "TV",
+        donationAddress: recipient.address,
+        allocationMechanismType: 0,
+        initialRecipients: [recipient.address],
+        initialWeights: [10000n],
+        votingCandidates: [],
+        votingEpochDuration: 0,
+        vaultCreatorFeeEncrypted: encFee[0],
+        driftThresholdEncrypted: encDrift[0],
+        minTimeBetweenRebalancesEncrypted: encMinTime[0],
+        keeper: keeper.address,
+        emergencyAdmin: emergencyAdmin.address,
+        maxStrategies: 10,
+      });
+      const receipt = await tx.wait();
+      const event = receipt?.logs.find(
+        (l: any) => l.fragment?.name === "VaultCreated"
+      );
+      const vaultAddr = event?.args?.vault;
+      const vault = await hre.ethers.getContractAt("PrivateComposableVault", vaultAddr);
+
+      const registryAddr = await vault.registry();
+      const yieldRouterAddr = await vault.yieldRouter();
+      const rebalancerAddr = await vault.rebalancer();
+
+      // Second call should revert
+      await expect(
+        vault.connect(deployer).initialize(registryAddr, yieldRouterAddr, rebalancerAddr)
+      ).to.be.revertedWith("PCV: already initialized");
     });
   });
 

@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npx hardhat compile 2>&1)",
+      "Bash(npx hardhat test 2>&1)",
+      "Bash(npx hardhat clean && npx hardhat compile 2>&1)",
+      "Bash(npx hardhat compile 2>&1 | grep -E \"\\(size|exceeds|Compiled|error\\)\")",
+      "Bash(npx hardhat compile 2>&1 && npx hardhat test 2>&1)"
+    ]
+  }
+}

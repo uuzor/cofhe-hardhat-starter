@@ -13,13 +13,30 @@ const config: HardhatUserConfig = {
     gasWarning: true,
   },
   solidity: {
-    version: "0.8.26",
-    settings: {
-      evmVersion: "cancun",
-      viaIR: true,
-      optimizer: {
-        enabled: true,
-        runs: 200,
+    compilers: [
+      {
+        version: "0.8.26",
+        settings: {
+          evmVersion: "cancun",
+          viaIR: true,
+          optimizer: {
+            enabled: true,
+            runs: 200,
+          },
+        },
+      },
+    ],
+    overrides: {
+      "contracts/VaultFactory.sol": {
+        version: "0.8.26",
+        settings: {
+          evmVersion: "cancun",
+          viaIR: true,
+          optimizer: {
+            enabled: true,
+            runs: 1,
+          },
+        },
       },
     },
   },
@@ -28,6 +45,19 @@ const config: HardhatUserConfig = {
   networks: {
     hardhat: {
       allowUnlimitedContractSize: true,
+      forking: process.env.FORK_NETWORK
+        ? {
+            url:
+              process.env.FORK_NETWORK === "base-sepolia"
+                ? "https://base-sepolia.g.alchemy.com/v2/gBLyY4xTb-MP1ZkxdnJdTqkYKQjxi_XO"
+                : process.env.FORK_NETWORK === "arb-sepolia"
+                  ? "https://arb-sepolia.g.alchemy.com/v2/gBLyY4xTb-MP1ZkxdnJdTqkYKQjxi_XO"
+                  : process.env.FORK_NETWORK === "eth-mainnet"
+                    ? "https://eth-mainnet.g.alchemy.com/v2/gBLyY4xTb-MP1ZkxdnJdTqkYKQjxi_XO"
+                    : "",
+            blockNumber: process.env.FORK_BLOCK ? parseInt(process.env.FORK_BLOCK) : undefined,
+          }
+        : undefined,
     },
     // localcofhe, eth-sepolia, and arb-sepolia are auto-injected by @cofhe/hardhat-plugin
 

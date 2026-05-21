@@ -369,4 +369,144 @@ describe("PrivateComposableVault", function () {
       ).to.be.revertedWith("PCV: not owner");
     });
   });
+
+  describe("removeStrategy", function () {
+    async function deploySetupWithStrategy() {
+      const base = await deployVaultFixture();
+      const { vault, registry, strategy, asset, owner, keeper, client } = base;
+
+      // Add strategy to registry and vault
+      const encWeight = await client.encryptInputs([Encryptable.uint16(10000n)]).execute();
+      await registry.connect(owner).addStrategy(await strategy.getAddress(), encWeight[0]);
+      await vault.connect(owner).addStrategy(await strategy.getAddress());
+
+      // Deposit and deploy to strategy
+      await asset.connect(owner).approve(await vault.getAddress(), base.DEPOSIT_AMOUNT);
+      await vault.connect(owner).deposit(base.DEPOSIT_AMOUNT, owner.address);
+      await vault.connect(keeper).deployToStrategy(await strategy.getAddress(), base.DEPOSIT_AMOUNT);
+
+      return { ...base, vault, registry, strategy, asset, owner, keeper, client };
+    }
+
+    it("should remove strategy after withdrawing all funds", async function () {
+      const { vault, registry, strategy, owner } = await loadFixture(deploySetupWithStrategy);
+
+      // Report (to sync debt with actual assets)
+      await vault.connect(owner).report(await strategy.getAddress());
+
+      // Withdraw all funds
+      await vault.connect(owner).withdrawAllFromStrategy(await strategy.getAddress());
+
+      // Verify debt is zero
+      expect(await vault.strategyDebt(await strategy.getAddress())).to.equal(0n);
+
+      // Remove strategy
+      await vault.connect(owner).removeStrategy(await strategy.getAddress());
+
+      // Verify removed from vault
+      expect(await vault.isStrategy(await strategy.getAddress())).to.be.false;
+      expect(await vault.strategyCount()).to.equal(0n);
+
+      // Verify removed from registry
+      expect(await registry.isStrategyRegistered(await strategy.getAddress())).to.be.false;
+    });
+
+    it("should revert removeStrategy if strategy has debt", async function () {
+      const { vault, strategy, owner } = await loadFixture(deploySetupWithStrategy);
+
+      // Don't withdraw — strategy still has debt
+      await expect(
+        vault.connect(owner).removeStrategy(await strategy.getAddress())
+      ).to.be.revertedWith("PCV: strategy has debt");
+    });
+
+    it("should revert removeStrategy if strategy still has assets", async function () {
+      const { vault, registry, strategy, asset, owner, keeper, client } =
+        await loadFixture(deploySetupWithStrategy);
+
+      // Withdraw from strategy (returns funds to vault)
+      await vault.connect(keeper).withdrawFromStrategy(await strategy.getAddress(), await vault.strategyDebt(await strategy.getAddress()));
+
+      // Strategy should have 0 assets (MockStrategy returns mockTotalAssets)
+      // Set mock total assets to 0
+      await strategy.setMockTotalAssets(0n);
+
+      // Report to sync
+      await vault.connect(keeper).report(await strategy.getAddress());
+
+      // Now debt should be 0 and assets should be 0
+      const debt = await vault.strategyDebt(await strategy.getAddress());
+      expect(debt).to.equal(0n);
+
+      // Should succeed
+      await vault.connect(owner).removeStrategy(await strategy.getAddress());
+      expect(await vault.isStrategy(await strategy.getAddress())).to.be.false;
+    });
+
+    it("should revert removeStrategy if not a strategy", async function () {
+      const { vault, owner } = await loadFixture(deployVaultFixture);
+
+      await expect(
+        vault.connect(owner).removeStrategy(vault.getAddress())
+      ).to.be.revertedWith("PCV: not a strategy");
+    });
+
+    it("should revert removeStrategy if not owner", async function () {
+      const { vault, strategy, user } = await loadFixture(deploySetupWithStrategy);
+
+      await expect(
+        vault.connect(user).removeStrategy(await strategy.getAddress())
+      ).to.be.revertedWith("PCV: not owner");
+    });
+
+    it("swap-and-pop: remove middle strategy, last moves to middle position", async function () {
+      const { vault, registry, asset, owner, keeper, client } =
+        await loadFixture(deployVaultFixture);
+
+      // Deploy 3 strategies
+      const MockStrategyFactory = await hre.ethers.getContractFactory("MockStrategy");
+      const s1 = await MockStrategyFactory.deploy(await asset.getAddress(), await vault.getAddress());
+      const s2 = await MockStrategyFactory.deploy(await asset.getAddress(), await vault.getAddress());
+      const s3 = await MockStrategyFactory.deploy(await asset.getAddress(), await vault.getAddress());
+
+      const encWeight = await client.encryptInputs([Encryptable.uint16(3333n)]).execute();
+      const encWeight2 = await client.encryptInputs([Encryptable.uint16(3333n)]).execute();
+      const encWeight3 = await client.encryptInputs([Encryptable.uint16(3334n)]).execute();
+
+      await registry.connect(owner).addStrategy(await s1.getAddress(), encWeight[0]);
+      await registry.connect(owner).addStrategy(await s2.getAddress(), encWeight2[0]);
+      await registry.connect(owner).addStrategy(await s3.getAddress(), encWeight3[0]);
+
+      await vault.connect(owner).addStrategy(await s1.getAddress());
+      await vault.connect(owner).addStrategy(await s2.getAddress());
+      await vault.connect(owner).addStrategy(await s3.getAddress());
+
+      // Verify 3 strategies
+      const strategiesBefore = await vault.getStrategies();
+      expect(strategiesBefore.length).to.equal(3);
+      expect(strategiesBefore[1]).to.equal(await s2.getAddress()); // s2 is in middle
+
+      // Remove s2 (middle) — s3 should move to position 1
+      await vault.connect(owner).removeStrategy(await s2.getAddress());
+
+      const strategiesAfter = await vault.getStrategies();
+      expect(strategiesAfter.length).to.equal(2);
+      // After swap-and-pop: s3 moves to s2's position
+      expect(strategiesAfter[1]).to.equal(await s3.getAddress());
+    });
+
+    it("isStrategy returns true for active strategies", async function () {
+      const { vault, strategy, owner } = await loadFixture(deploySetupWithStrategy);
+
+      expect(await vault.isStrategy(await strategy.getAddress())).to.be.true;
+    });
+
+    it("getStrategies returns all active strategies", async function () {
+      const { vault, strategy, owner } = await loadFixture(deploySetupWithStrategy);
+
+      const strategies = await vault.getStrategies();
+      expect(strategies.length).to.equal(1);
+      expect(strategies[0]).to.equal(await strategy.getAddress());
+    });
+  });
 });

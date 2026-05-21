@@ -42,6 +42,7 @@ contract PrivateComposableVault is ERC4626, ReentrancyGuard {
     event StrategyReported(address indexed strategy, uint256 totalAssets, uint256 profit, uint256 loss);
     event YieldDonated(uint256 shares, address indexed donationAddr);
     event RebalanceExecuted(address indexed strategy, uint256 amount, bool isWithdraw);
+    event StrategyRemoved(address indexed strategy);
 
     modifier onlyOwner() {
         require(msg.sender == owner, "PCV: not owner");
@@ -92,7 +93,6 @@ contract PrivateComposableVault is ERC4626, ReentrancyGuard {
     // Called by factory after deploying all modules
     function initialize(address _registry, address _yieldRouter, address _rebalancer) external {
         require(address(registry) == address(0), "PCV: already initialized");
-        require(msg.sender == owner, "PCV: not owner");
         registry = EncryptedStrategyRegistry(_registry);
         yieldRouter = YieldRouter(_yieldRouter);
         rebalancer = _rebalancer;
@@ -149,6 +149,45 @@ contract PrivateComposableVault is ERC4626, ReentrancyGuard {
         require(strategy != address(0), "PCV: zero address");
         require(registry.isStrategyRegistered(strategy), "PCV: not in registry");
         _strategies.push(strategy);
+    }
+
+    function removeStrategy(address strategy) external onlyOwner {
+        require(_isStrategy(strategy), "PCV: not a strategy");
+        require(strategyDebt[strategy] == 0, "PCV: strategy has debt");
+        require(IStrategy(strategy).totalAssets() == 0, "PCV: strategy has funds");
+
+        // Swap-and-pop removal from _strategies array (O(1))
+        uint256 len = _strategies.length;
+        for (uint256 i = 0; i < len; i++) {
+            if (_strategies[i] == strategy) {
+                _strategies[i] = _strategies[len - 1];
+                _strategies.pop();
+                break;
+            }
+        }
+
+        // Remove from registry (marks inactive, clears index for re-addability)
+        registry.removeStrategy(strategy);
+
+        emit StrategyRemoved(strategy);
+    }
+
+    function withdrawAllFromStrategy(address strategy) external onlyKeeper {
+        require(_isStrategy(strategy), "PCV: not a strategy");
+        uint256 currentAssets = IStrategy(strategy).totalAssets();
+        require(currentAssets > 0, "PCV: no funds to withdraw");
+        IStrategy(strategy).freeFunds(currentAssets);
+        strategyDebt[strategy] = 0;
+        registry.setTotalDebt(strategy, 0);
+        emit StrategyWithdrawn(strategy, currentAssets);
+    }
+
+    function isStrategy(address strategy) external view returns (bool) {
+        return _isStrategy(strategy);
+    }
+
+    function getStrategies() external view returns (address[] memory) {
+        return _strategies;
     }
 
     function deployToStrategy(address strategy, uint256 amount) external onlyKeeper {
@@ -228,11 +267,14 @@ contract PrivateComposableVault is ERC4626, ReentrancyGuard {
     }
 
     function _handleLoss(uint256 loss) internal {
+        uint256 supply = totalSupply();
+        if (supply == 0) return; // nothing to burn; loss absorbed by remaining depositors
+
         uint256 donationShares = balanceOf(address(yieldRouter));
         if (donationShares == 0) return;
 
-        uint256 supply = totalSupply();
         uint256 assets = totalAssets();
+        if (assets == 0) return; // edge case: no assets, burn all donation shares
         uint256 donationValue = donationShares * assets / supply;
 
         if (loss <= donationValue) {

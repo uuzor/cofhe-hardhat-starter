@@ -22,7 +22,11 @@
 		"arb-sepolia:reset-counter": "hardhat reset-counter --network arb-sepolia",
 		"base-sepolia:deploy-counter": "hardhat deploy-counter --network base-sepolia",
 		"base-sepolia:increment-counter": "hardhat increment-counter --network base-sepolia",
-		"base-sepolia:reset-counter": "hardhat reset-counter --network base-sepolia"
+		"base-sepolia:reset-counter": "hardhat reset-counter --network base-sepolia",
+		"base-sepolia:deploy-vault": "hardhat deploy-full-system --network base-sepolia",
+		"arb-sepolia:deploy-vault": "hardhat deploy-full-system --network arb-sepolia",
+		"test:fork": "FORK_ENABLED=true hardhat test test/fork/AaveStrategy.fork.test.ts",
+		"test:fork:block": "FORK_ENABLED=true FORK_BLOCK=22000000 hardhat test test/fork/AaveStrategy.fork.test.ts"
 	},
 	"repository": {
 		"type": "git",

@@ -88,7 +88,7 @@ describe("EncryptedStrategyRegistry", function () {
   });
 
   describe("removeStrategy", function () {
-    it("should mark strategy as inactive after removeStrategy", async function () {
+    it("should mark strategy as inactive and clear index after removeStrategy", async function () {
       const { registry, signer, client, addr1 } =
         await loadFixture(deployRegistryFixture);
 
@@ -96,16 +96,23 @@ describe("EncryptedStrategyRegistry", function () {
       await registry.connect(signer).addStrategy(addr1.address, enc[0]);
 
       // getActive is authorized — signer is both vault and owner, so allowed
-      // Use staticCall to get the return value without sending a transaction
       const activeBefore = await registry.connect(signer).getActive.staticCall(addr1.address);
       const activePlainBefore = await hre.cofhe.mocks.getPlaintext(activeBefore);
       expect(activePlainBefore).to.equal(1n); // true
+      expect(await registry.isStrategyRegistered(addr1.address)).to.be.true;
 
-      await registry.connect(signer).removeStrategy(addr1.address);
+      // Remove strategy — emits StrategyRemoved event and clears _strategyIndex
+      await expect(registry.connect(signer).removeStrategy(addr1.address))
+        .to.emit(registry, "StrategyRemoved")
+        .withArgs(addr1.address);
 
-      const activeAfter = await registry.connect(signer).getActive.staticCall(addr1.address);
-      const activePlainAfter = await hre.cofhe.mocks.getPlaintext(activeAfter);
-      expect(activePlainAfter).to.equal(0n); // false
+      // Strategy is no longer findable via _strategyIndex
+      expect(await registry.isStrategyRegistered(addr1.address)).to.be.false;
+
+      // Can re-add the same strategy (index was cleared)
+      const enc2 = await client.encryptInputs([Encryptable.uint16(3000n)]).execute();
+      await registry.connect(signer).addStrategy(addr1.address, enc2[0]);
+      expect(await registry.isStrategyRegistered(addr1.address)).to.be.true;
     });
   });
 

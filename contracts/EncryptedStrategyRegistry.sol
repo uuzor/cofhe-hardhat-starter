@@ -32,6 +32,11 @@ contract EncryptedStrategyRegistry {
         _;
     }
 
+    modifier onlyOwnerOrVault() {
+        require(msg.sender == owner || msg.sender == vault, "ESR: not owner");
+        _;
+    }
+
     modifier onlyVault() {
         require(msg.sender == vault, "ESR: not vault");
         _;
@@ -104,9 +109,16 @@ contract EncryptedStrategyRegistry {
         emit StrategyAdded(strategy, _entries.length - 1);
     }
 
-    function removeStrategy(address strategy) external onlyOwner {
+    function removeStrategy(address strategy) external onlyOwnerOrVault {
         uint256 idx = _strategyIndex[strategy];
         require(idx != 0, "ESR: strategy not found");
+
+        // Only the vault should call this (owner calls directly to mark inactive)
+        // Vault call: only allow if debt is zero (enforced by vault's checks)
+        if (msg.sender == vault) {
+            // Clear the index mapping so strategy can be re-added later
+            delete _strategyIndex[strategy];
+        }
 
         StrategyEntry storage entry = _entries[idx - 1];
 
@@ -116,6 +128,8 @@ contract EncryptedStrategyRegistry {
 
         FHE.allowThis(entry.active);
         FHE.allowThis(_weightSum);
+
+        // Note: _entries array entry is kept — FHE handles may be shared with auditors
 
         emit StrategyRemoved(strategy);
     }

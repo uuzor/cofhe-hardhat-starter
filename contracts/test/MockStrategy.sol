@@ -39,6 +39,7 @@ contract MockStrategy is IStrategy {
     function freeFunds(uint256 amount) external override {
         IERC20(asset).safeTransfer(vault, amount);
         deployedAmount = deployedAmount >= amount ? deployedAmount - amount : 0;
+        mockTotalAssets = mockTotalAssets >= amount ? mockTotalAssets - amount : 0;
     }
 
     function harvestAndReport() external override returns (uint256) {

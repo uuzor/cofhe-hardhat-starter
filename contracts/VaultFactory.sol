@@ -4,11 +4,18 @@ pragma solidity ^0.8.25;
 import "@fhenixprotocol/cofhe-contracts/FHE.sol";
 import "./PrivateComposableVault.sol";
 import "./EncryptedStrategyRegistry.sol";
-import "./PrivateRebalancer.sol";
 import "./SelectiveDisclosureModule.sol";
 import "./YieldRouter.sol";
 import "./AllocationMechanismFactory.sol";
 import "./VaultRegistry.sol";
+
+interface IRebalancerConfig {
+    function configureVault(
+        address vault,
+        InEuint16 calldata encDriftThreshold,
+        InEuint32 calldata encMinTime
+    ) external;
+}
 
 contract VaultFactory {
     enum AllocationMechanismType { FIXED, VOTING }
@@ -42,7 +49,7 @@ contract VaultFactory {
 
     VaultRegistry public immutable vaultRegistry;
     AllocationMechanismFactory public immutable mechanismFactory;
-    PrivateRebalancer public immutable rebalancerContract; // shared rebalancer
+    address public immutable rebalancer;
 
     event VaultCreated(
         address indexed vault,
@@ -52,10 +59,10 @@ contract VaultFactory {
         address allocationMechanism
     );
 
-    constructor(address _vaultRegistry, address _mechanismFactory) {
+    constructor(address _vaultRegistry, address _mechanismFactory, address _rebalancer) {
         vaultRegistry = VaultRegistry(_vaultRegistry);
         mechanismFactory = AllocationMechanismFactory(_mechanismFactory);
-        rebalancerContract = new PrivateRebalancer(address(this));
+        rebalancer = _rebalancer;
     }
 
     function createVault(VaultParams calldata params) external returns (DeployedVault memory deployed) {
@@ -81,17 +88,15 @@ contract VaultFactory {
             address(this)
         );
 
-        // 3. Link rebalancer in registry (factory has permission via onlyVaultOrFactory)
-        registry.setRebalancer(address(rebalancerContract));
-
-        // 4. Configure rebalancer for this vault
-        rebalancerContract.configureVault(
+        // 3. Link shared rebalancer in registry and configure
+        registry.setRebalancer(rebalancer);
+        IRebalancerConfig(rebalancer).configureVault(
             address(vault),
             params.driftThresholdEncrypted,
             params.minTimeBetweenRebalancesEncrypted
         );
 
-        // 5. Deploy allocation mechanism
+        // 4. Deploy allocation mechanism
         address mechanism;
         if (params.allocationMechanismType == AllocationMechanismType.FIXED) {
             mechanism = mechanismFactory.createFixed(
@@ -109,25 +114,25 @@ contract VaultFactory {
             );
         }
 
-        // 6. Deploy yield router
+        // 5. Deploy yield router
         YieldRouter yieldRouter = new YieldRouter(address(vault), mechanism);
 
-        // 7. Deploy selective disclosure module
+        // 6. Deploy selective disclosure module
         SelectiveDisclosureModule disclosureModule = new SelectiveDisclosureModule(
             address(vault),
             address(registry)
         );
 
-        // 8. Initialize vault with all modules
-        vault.initialize(address(registry), address(yieldRouter), address(rebalancerContract));
+        // 7. Initialize vault with all modules
+        vault.initialize(address(registry), address(yieldRouter), rebalancer);
 
-        // 9. Register in VaultRegistry
+        // 8. Register in VaultRegistry
         vaultRegistry.register(address(vault), params.asset, params.name, params.symbol, creator);
 
         deployed = DeployedVault({
             vault: address(vault),
             registry: address(registry),
-            rebalancer: address(rebalancerContract),
+            rebalancer: rebalancer,
             disclosureModule: address(disclosureModule),
             yieldRouter: address(yieldRouter),
             allocationMechanism: mechanism
